@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// App Group 共享存储：主 App 与小组件扩展共用一份键值存储（对应 Android 的 SharedPreferences）。
 /// 共享存储：优先用固定路径共享文件（TrollStore + no-sandbox 私有权能下 App 与
@@ -27,16 +28,54 @@ enum Store {
         return plist["Entitlements"] as? [String: Any]
     }
 
+    /// 运行时读「本进程真正被授权的」 App Group。
+    /// 企业证书重签（爱思/全能签等）会把 entitlements 整体换成自己的共享组池
+    /// （例如 group.ea9095b9ab7b2c01.*），此时包内既没有 embedded.mobileprovision，
+    /// 写死的组名也不再被授权；只有从 Security.framework 读自身 entitlements
+    /// 才能拿到真正可用的组名，主 App 与小组件扩展因此重新共享同一份数据。
+    private static func runtimeEntitlementGroups() -> [String] {
+        typealias CreateFn = @convention(c) (UnsafeRawPointer?) -> UnsafeMutableRawPointer?
+        typealias CopyFn = @convention(c) (UnsafeMutableRawPointer?, UnsafeRawPointer?, UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer?
+        guard let h = dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_NOW),
+              let sCreate = dlsym(h, "SecTaskCreateFromSelf"),
+              let sCopy = dlsym(h, "SecTaskCopyValueForEntitlement") else { return [] }
+        let create = unsafeBitCast(sCreate, to: CreateFn.self)
+        let copy = unsafeBitCast(sCopy, to: CopyFn.self)
+        guard let task = create(nil) else { return [] }
+        let key = "com.apple.security.application-groups" as CFString
+        guard let raw = copy(task, Unmanaged.passUnretained(key).toOpaque(), nil) else { return [] }
+        let value = Unmanaged<AnyObject>.fromOpaque(raw).takeRetainedValue()
+        return (value as? [String]) ?? []
+    }
+
+    /// 诊断：运行时实际被授权的组列（重签环境里这是唯一可信来源）。
+    static var runtimeGroupsText: String {
+        let g = runtimeEntitlementGroups()
+        return g.isEmpty ? "运行时未读到" : g.joined(separator: ", ")
+    }
+
     private static func resolveGroupId() -> String {
         let fallback = "group.com.arcfoxplus.widget"
-        guard let ent = provisionEntitlements(),
-              let groups = ent["com.apple.security.application-groups"] as? [String],
-              let g = groups.first, !g.isEmpty else { return fallback }
-        return g
+        // 1) 运行时 entitlements：重签后写死的组名会失效，这里拿到的才是可用组
+        let rt = runtimeEntitlementGroups()
+        if let own = rt.first(where: { $0.contains("arcfoxplus") }) { return own }
+        for g in rt where FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: g) != nil {
+            return g
+        }
+        if let g = rt.first, !g.isEmpty { return g }
+        // 2) 签名时嵌入的 mobileprovision（未重签/TrollStore 直装场景）
+        if let ent = provisionEntitlements(),
+           let groups = ent["com.apple.security.application-groups"] as? [String],
+           let g = groups.first, !g.isEmpty { return g }
+        // 3) 兜底
+        return fallback
     }
+
 
     /// 诊断：证书描述文件里实际授权的 App Group 列表（空 = 证书没这权限）。
     static var certGroupsText: String {
+        let rt = runtimeEntitlementGroups()
+        if !rt.isEmpty { return rt.joined(separator: ", ") }
         guard let ent = provisionEntitlements() else { return "读不到描述文件(未签名？)" }
         guard let groups = ent["com.apple.security.application-groups"] as? [String], !groups.isEmpty else {
             return "无(证书没有App Group权限)"
