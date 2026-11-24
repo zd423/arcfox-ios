@@ -165,9 +165,13 @@ enum ArcApi {
     }
 
     static func deviceModel() -> String {
-        var sys = utsname(); uname(&sys)
-        let mirror = Mirror(reflecting: sys.machine)
-        let id = mirror.children.reduce("") { $0 + (($1.value as? UInt8).map { String(UnicodeScalar($0)) } ?? "") }.trimmingCharacters(in: .controlCharacters)
+        var sys = utsname()
+        uname(&sys)
+        // machine 是 CChar 元组（Int8），必须按字节读取，不能强转 UInt8
+        let id = withUnsafeBytes(of: &sys.machine) { buf -> String in
+            let bytes = buf.prefix { $0 != 0 }
+            return String(bytes: bytes, encoding: .utf8) ?? ""
+        }
         return id.isEmpty ? "iPhone" : id
     }
 

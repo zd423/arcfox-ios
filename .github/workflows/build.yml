@@ -5,12 +5,26 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: write
+  issues: write
+
+env:
+  SCHEME: ArcfoxWidgetApp
+  IPA_NAME: ArcfoxWidget-v3.0-ios-unsigned.ipa
+
 jobs:
   build:
     runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Toolchain info
+        run: |
+          xcodebuild -version
+          sw_vers
+          ls -1
 
       - name: Install xcodegen & ldid
         run: |
@@ -25,32 +39,75 @@ jobs:
           set -o pipefail
           xcodebuild build \
             -project ArcfoxWidget.xcodeproj \
-            -scheme ArcfoxWidgetApp \
+            -scheme "$SCHEME" \
             -configuration Release \
             -destination "generic/platform=iOS" \
             -derivedDataPath build/dd \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            AD_HOC_CODE_SIGNING_ALLOWED=YES \
-            | tail -40
+            AD_HOC_CODE_SIGNING_ALLOWED=YES 2>&1 | tee build.log | tail -80
+
+      # Diagnostics are published as a release asset so they can be read without credentials.
+      - name: Collect diagnostics
+        if: always()
+        run: |
+          {
+            echo "run_id: $GITHUB_RUN_ID  attempt: $GITHUB_RUN_ATTEMPT  sha: $GITHUB_SHA"
+            echo "=== errors ==="
+            grep -nE "error:|错误:" build.log 2>/dev/null | sort -u | head -200 || true
+            echo "=== warnings ==="
+            grep -nE "warning:" build.log 2>/dev/null | sort -u | head -80 || true
+            echo "=== tail ==="
+            tail -500 build.log 2>/dev/null || true
+          } > ci-report.txt 2>&1 || true
+          wc -l ci-report.txt || true
+
+      - name: Publish diagnostics on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="diag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          gh release create "$TAG" ci-report.txt \
+            --title "CI diagnostics $TAG" \
+            --notes "Automated failure report for commit $GITHUB_SHA." || true
 
       - name: Package ipa (ldid pseudo-sign with app-group entitlements)
+        if: success()
         run: |
           APP="build/dd/Build/Products/Release-iphoneos/ArcfoxWidgetApp.app"
           EXT="$APP/PlugIns/ArcfoxWidgetExt.appex"
+          ls -la "$APP" || true
+          ls -la "$EXT" || true
           # 伪签（ldid）：TrollStore 可直接装；之后也能用 Sideloadly / 证书工具重签
           ldid -SApp/ArcfoxApp.entitlements "$APP/ArcfoxWidgetApp"
           ldid -SWidget/ArcfoxWidget.entitlements "$EXT/ArcfoxWidgetExt"
+          rm -rf Payload
           mkdir -p Payload
           cp -R "$APP" Payload/
-          zip -r -q ArcfoxWidget-v3.0-ios-unsigned.ipa Payload
-          unzip -l ArcfoxWidget-v3.0-ios-unsigned.ipa | tail -20
-          ls -lh ArcfoxWidget-v3.0-ios-unsigned.ipa
+          zip -r -q "$IPA_NAME" Payload
+          unzip -l "$IPA_NAME" | tail -25 > ipa-list.txt || true
+          cat ipa-list.txt
+          ls -lh "$IPA_NAME"
+          shasum -a 256 "$IPA_NAME" | tee ipa-sha256.txt
 
       - name: Upload ipa artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: ArcfoxWidget-v3.0-ios-ipa
-          path: ArcfoxWidget-v3.0-ios-unsigned.ipa
+          path: |
+            ArcfoxWidget-v3.0-ios-unsigned.ipa
+            ipa-sha256.txt
           retention-days: 30
+
+      - name: Publish ipa release
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v3.0.${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" "$IPA_NAME" ipa-sha256.txt \
+            --title "极狐车况小组件 v3.0 (IO${GITHUB_RUN_NUMBER})" \
+            --notes "自动构建产物（未签名 / ldid 伪签），仅用于自用测试与二次签名。" || true

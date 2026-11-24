@@ -305,7 +305,3 @@ struct MainView: View {
         """
     }
 }
-
-extension String {
-    var upEmpty: String { self }
-}
