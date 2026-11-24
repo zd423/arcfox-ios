@@ -20,9 +20,9 @@ struct AdvancedSettingsView: View {
             sub("小组件数据链路")
             HStack {
                 Text("共享存储：")
-                Text(Store.probeGroup() ? "正常（\(Store.channelName)）" : "异常！小组件读不到数据")
+                Text(Store.probeGroup() ? "正常（\(Store.channelName)）" : "不可用（已由云同步自动接管）")
                     .fontWeight(.semibold)
-                    .foregroundColor(Store.probeGroup() ? .green : .red)
+                    .foregroundColor(Store.probeGroup() ? .green : .orange)
                 Spacer()
                 Button("重载小组件") { WidgetBridge.reloadWidgets() }
                     .buttonStyle(.bordered)
@@ -31,17 +31,22 @@ struct AdvancedSettingsView: View {
             Text("证书组权限：\(Store.certGroupsText)｜实际用的组：\(Store.appGroupId)｜通道：\(Store.channelName)")
                 .font(.caption2).foregroundColor(.secondary)
 
-            // 云同步：无 App Group 权限时小组件走云端拉数据（同步码即私有主题名，载荷加密）
+            // 云同步：无 App Group 权限时小组件走云端拉数据（设备自动通道免手填，同步码为备选）
             sub("小组件云同步（无共享权限时的通道）")
             Toggle("开启云同步", isOn: $cloudOn)
                 .font(.callout)
                 .onChange(of: cloudOn) { on in
                     CloudSync.enabled = on
                     if on && Store.get(Store.kCloudTopic).isEmpty {
-                        cloudTopic = CloudSync.newTopic()
+                        cloudTopic = CloudSync.autoCode
+                        Store.set(Store.kCloudTopic, cloudTopic)
                     }
                 }
             if cloudOn {
+                Text("自动通道：\(CloudSync.autoCode)")
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1).minimumScaleFactor(0.6)
                 HStack {
                     Text("同步码：")
                     Text(cloudTopic.isEmpty ? "（未生成）" : cloudTopic)
@@ -68,7 +73,7 @@ struct AdvancedSettingsView: View {
                 }
                 .buttonStyle(.bordered)
                 Text(cloudInfo).font(.caption2).foregroundColor(.secondary)
-                Text("开启后每次刷新自动上传；小组件里长按→编辑→填同步码即可拿数据（含控车）。载荷加密，云端存的是密文。")
+                Text("开启后每次刷新自动上传；证书重签导致 App Group 失效时，小组件会自动走设备自动通道取数，无需手填同步码。载荷加密，云端只存密文。手动同步码仍可用来把数据带到另一台设备。")
                     .font(.caption2).foregroundColor(.secondary)
             }
 

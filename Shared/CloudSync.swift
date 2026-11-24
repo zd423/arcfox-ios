@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import UIKit
 
 /// 云同步中转：证书没有 App Group 权限（如全能签普通证书）时的兜底通道。
 /// 主 App 把全量键值（车况缓存 + 登录态 + 设置）压缩加密后发布到 ntfy 私有主题，
@@ -9,12 +10,22 @@ enum CloudSync {
     private static let base = "https://ntfy.sh"
     private static let marker = "arcfox-widget-sync"
 
+    /// 证书重签后 App Group 必然失效，云同步是小组件唯一的跨进程通道，所以默认开启。
     static var enabled: Bool {
-        get { Store.getInt(Store.kCloudOn, 0) == 1 }
+        get { Store.getInt(Store.kCloudOn, 1) == 1 }
         set { Store.setInt(Store.kCloudOn, newValue ? 1 : 0) }
     }
 
     static var topic: String { Store.get(Store.kCloudTopic) }
+
+    /// 设备自动通道：宿主 App 与其扩展同属一个 vendor，identifierForVendor 相同，
+    /// 因此两边无需任何配置就能算出同一个私有主题名（免手填版"同步码"）。
+    static var autoCode: String {
+        let idfv = UIDevice.current.identifierForVendor?.uuidString ?? "no-idfv"
+        let h = SHA256.hash(data: Data(("arcfox-auto|" + idfv).utf8))
+        let hex = h.map { String(format: "%02x", $0) }.joined()
+        return "arcfoxw-" + String(hex.prefix(20))
+    }
 
     /// 生成新的同步码（随机私有主题名，不可猜测）。
     @discardableResult
@@ -72,25 +83,39 @@ enum CloudSync {
         return (out, code)
     }
 
-    /// 主 App 上传（后台线程调用）。返回 nil = 成功，否则错误信息。
-    @discardableResult
-    static func upload() -> String? {
-        guard enabled else { return nil }
-        let code = topic
-        guard !code.isEmpty else { return "没有同步码" }
-        guard let payload = seal(Store.exportDict(), code: code) else { return "载荷编码失败" }
-        guard payload.count < 3600 else { return "载荷过大(\(payload.count)B)" }
+    private static func post(_ code: String, _ payload: String) -> String? {
         var req = URLRequest(url: URL(string: "\(base)/\(code)")!)
         req.httpMethod = "POST"
         req.setValue(marker, forHTTPHeaderField: "Title")
         req.httpBody = Data(payload.utf8)
         req.timeoutInterval = 30
         let (_, st) = http(req)
-        if (200..<300).contains(st) {
-            Store.setLong(Store.kCloudTs, Int64(Date().timeIntervalSince1970 * 1000))
-            return nil
+        return (200..<300).contains(st) ? nil : "上传失败 HTTP \(st)"
+    }
+
+    /// 主 App 上传（后台线程调用）。返回 nil = 成功，否则错误信息。
+    /// 同一份载荷分别用「同步码」和「设备自动通道」各自加密投递一次，
+    /// 小组件在无 App Group 时只要命中任一通道就能自给自足。
+    @discardableResult
+    static func upload() -> String? {
+        guard enabled else { return nil }
+        var code = topic
+        if code.isEmpty {
+            code = autoCode
+            Store.set(Store.kCloudTopic, code)
         }
-        return "上传失败 HTTP \(st)"
+        let dict = Store.exportDict()
+        var first: String?
+        for c in [code, autoCode] where !c.isEmpty {
+            guard let payload = seal(dict, code: c) else { return "载荷编码失败" }
+            guard payload.count < 3600 else { return "载荷过大(\(payload.count)B)" }
+            let e = post(c, payload)
+            if c == code { first = e }
+        }
+        if first == nil {
+            Store.setLong(Store.kCloudTs, Int64(Date().timeIntervalSince1970 * 1000))
+        }
+        return first
     }
 
     /// 小组件下载并导入本地。返回 nil = 成功，否则错误信息。
@@ -112,5 +137,18 @@ enum CloudSync {
         guard let dict = open(msg, code: code) else { return "解密失败（同步码不一致？）" }
         Store.importDict(dict)
         return nil
+    }
+
+    /// 小组件侧：依次尝试「配置里的同步码 → 本地记住的通道 → 设备自动通道」，
+    /// 命中任一即导入成功。返回 nil = 成功，否则最后一次错误信息。
+    @discardableResult
+    static func downloadBest(preferred: String = "") -> String? {
+        var seen = [String]()
+        var lastErr = "未配置同步通道"
+        for c in [preferred, topic, autoCode] where !c.isEmpty && !seen.contains(c) {
+            seen.append(c)
+            if let e = download(code: c) { lastErr = e } else { return nil }
+        }
+        return lastErr
     }
 }

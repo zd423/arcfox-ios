@@ -33,13 +33,14 @@ struct CarProvider: AppIntentTimelineProvider {
     }
 
     private func resolve(_ configuration: SyncConfigIntent) -> CarEntry {
-        // 同步码：配置里填的优先，并记住（交互按钮的 Intent 复用）
+        // 同步码：配置里填的优先 → 本地记住的 → 设备自动通道（同 vendor 派生，免手填）
         var code = configuration.syncCode.trimmingCharacters(in: .whitespacesAndNewlines)
         if !code.isEmpty {
             Store.set(Store.kCloudTopic, code)
         } else {
             code = Store.get(Store.kCloudTopic)
         }
+        if code.isEmpty { code = CloudSync.autoCode }
 
         var cache = TspControl.readCache()
         var fetchError = ""
@@ -48,15 +49,13 @@ struct CarProvider: AppIntentTimelineProvider {
         var stale = ts == 0 || Date().timeIntervalSince1970 * 1000 - Double(ts) > Double(autoMin) * 60_000
 
         if cache == nil || stale {
-            // ① 云同步兼底（无 App Group 时的主通道）：拉回并导入本地，登录态/车况/控车状态都有了
-            if !code.isEmpty {
-                let derr = CloudSync.download(code: code)
-                cache = TspControl.readCache()
-                ts = Store.getLong(Store.kCacheTs, 0)
-                stale = ts == 0 || Date().timeIntervalSince1970 * 1000 - Double(ts) > Double(autoMin) * 60_000
-                if cache == nil || stale {
-                    fetchError = "云同步：" + (derr ?? "未取到")
-                }
+            // ① 云同步（证书重签导致 App Group 失效时的主要通道）：多通道各试一次
+            let derr = CloudSync.downloadBest(preferred: code)
+            cache = TspControl.readCache()
+            ts = Store.getLong(Store.kCacheTs, 0)
+            stale = ts == 0 || Date().timeIntervalSince1970 * 1000 - Double(ts) > Double(autoMin) * 60_000
+            if cache == nil || stale {
+                fetchError = "云同步：" + (derr ?? "未取到")
             }
             // ② 仍无数据 → 扩展进程自取（token 来自共享存储或云端导入）
             if cache == nil || stale {
