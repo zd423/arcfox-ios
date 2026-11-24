@@ -6,13 +6,13 @@ enum ArcApi {
 
     static let appCode = "750"
     static let appKey = "9821426645"
-    static let appVersion = "3.4.32"
+    static let appVersion = "3.4.36"
     static let secret = "9b3e08953e1a2c5192591d368e67513f"
     static let hostAccount = "https://mg.arcfox.cn/"
     static let hostCar = "https://sdkserver-n5.bjev.com.cn/api/"
     static let pathCarState = "rc/bctp/carState/query/"
     static let pathVehicleCondition = "tdata-sync/public/tsp/getVehicleCondition"
-    static let ua = "BMSuperApp/3.4.32 (com.bxbe.arcfox; build:750; Android 15) OkHttp/4.12.0"
+    static let ua = "BMSuperApp/3.4.36 (com.bxbe.arcfox; build:750; Android 15) OkHttp/4.12.0"
     static let queryKeys = "gps,kmTotal,limitedDriving,current,chargingleft,soc,insideTemperature,chrgDchaPwrDisp,chrgDmPwr,vehSpd,status.S3,status.S4,status.S49,status.S50,status.S51,status.S52,status.S67,status.S112,status.S116,status.S128,status.S105,status.statusDataSendTime"
 
     struct Resp {
