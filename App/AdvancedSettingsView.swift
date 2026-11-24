@@ -73,7 +73,11 @@ struct AdvancedSettingsView: View {
                 }
                 .buttonStyle(.bordered)
                 Text(cloudInfo).font(.caption2).foregroundColor(.secondary)
-                Text("开启后每次刷新自动上传；证书重签导致 App Group 失效时，小组件会自动走设备自动通道取数，无需手填同步码。载荷加密，云端只存密文。手动同步码仍可用来把数据带到另一台设备。")
+                if !Store.probeGroup() {
+                    Text("证书重签后 App Group 失效，小组件只能靠这里取数：① 点「复制」 ② 回桌面长按小组件 → 编辑小组件 → 把码粘进「同步码」 ③ 保存")
+                        .font(.caption2).foregroundColor(.orange)
+                }
+                Text("每次刷新自动上传，云端只存密文。自动通道按设备派生，多数情况免手填；若小组件上出现「长按卡片→编辑小组件→填同步码」，就把上面的同步码粘进去，之后不用再管。")
                     .font(.caption2).foregroundColor(.secondary)
             }
 

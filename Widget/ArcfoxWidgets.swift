@@ -40,6 +40,7 @@ struct CarProvider: AppIntentTimelineProvider {
         } else {
             code = Store.get(Store.kCloudTopic)
         }
+        let manual = code
         if code.isEmpty { code = CloudSync.autoCode }
 
         var cache = TspControl.readCache()
@@ -49,25 +50,19 @@ struct CarProvider: AppIntentTimelineProvider {
         var stale = ts == 0 || Date().timeIntervalSince1970 * 1000 - Double(ts) > Double(autoMin) * 60_000
 
         if cache == nil || stale {
-            // ① 云同步（证书重签导致 App Group 失效时的主要通道）：多通道各试一次
-            let derr = CloudSync.downloadBest(preferred: code)
+            // 只做一次单请求的云同步：扩展的 timeline 预算很紧，任何多请求链路都会让它超时被杀，
+            // 取车况、刷 token 这类重活一律留给主 App（App 每次刷新后都会上传快照）。
+            let derr = CloudSync.downloadBest(preferred: code, wait: 5)
             cache = TspControl.readCache()
             ts = Store.getLong(Store.kCacheTs, 0)
             stale = ts == 0 || Date().timeIntervalSince1970 * 1000 - Double(ts) > Double(autoMin) * 60_000
-            if cache == nil || stale {
-                fetchError = "云同步：" + (derr ?? "未取到")
-            }
-            // ② 仍无数据 → 扩展进程自取（token 来自共享存储或云端导入）
-            if cache == nil || stale {
-                let r = Fetcher.fetch()
-                if let c = r.cache {
-                    TspControl.reconcile(c)
-                    Store.set(Store.kCache, c.rawUnsorted)
-                    Store.setLong(Store.kCacheTs, Int64(Date().timeIntervalSince1970 * 1000))
-                    cache = c
-                    fetchError = ""
-                } else if fetchError.isEmpty {
-                    fetchError = r.error ?? "取不到车况"
+            if cache == nil {
+                if manual.isEmpty {
+                    fetchError = "长按卡片→编辑小组件→填同步码"
+                } else if let e = derr {
+                    fetchError = "云同步：" + e
+                } else {
+                    fetchError = "请打开 App 刷新一次"
                 }
             }
         }

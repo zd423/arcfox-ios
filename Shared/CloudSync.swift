@@ -27,12 +27,12 @@ enum CloudSync {
         return "arcfoxw-" + String(hex.prefix(20))
     }
 
-    /// 生成新的同步码（随机私有主题名，不可猜测）。
+    /// 生成新的同步码（随机私有主题名，不可猜测）。8 位便于手输到小组件配置里。
     @discardableResult
     static func newTopic() -> String {
         let chars = Array("abcdefghijkmnpqrstuvwxyz23456789")
         var s = ""
-        for _ in 0..<14 { s.append(chars.randomElement()!) }
+        for _ in 0..<8 { s.append(chars.randomElement()!) }
         Store.set(Store.kCloudTopic, s)
         return s
     }
@@ -70,16 +70,23 @@ enum CloudSync {
         } catch { return nil }
     }
 
-    private static func http(_ req: URLRequest) -> (Data?, Int) {
+    /// 同步 HTTP，必须带硬超时。
+    /// Widget 扩展的 timeline 预算约 30 秒，无上限的 sem.wait() 会把扩展拖到超时被杀，
+    /// 桌面只剩系统占位符（连"无数据"都渲染不出来），所以这里超时即取消并返回 -1。
+    private static func http(_ req: URLRequest, wait: TimeInterval) -> (Data?, Int) {
         let sem = DispatchSemaphore(value: 0)
         var out: Data?
         var code = 0
-        URLSession.shared.dataTask(with: req) { d, r, _ in
+        let task = URLSession.shared.dataTask(with: req) { d, r, _ in
             out = d
             code = (r as? HTTPURLResponse)?.statusCode ?? 0
             sem.signal()
-        }.resume()
-        sem.wait()
+        }
+        task.resume()
+        if sem.wait(timeout: .now() + wait) == .timedOut {
+            task.cancel()
+            return (nil, -1)
+        }
         return (out, code)
     }
 
@@ -88,8 +95,9 @@ enum CloudSync {
         req.httpMethod = "POST"
         req.setValue(marker, forHTTPHeaderField: "Title")
         req.httpBody = Data(payload.utf8)
-        req.timeoutInterval = 30
-        let (_, st) = http(req)
+        req.timeoutInterval = 15
+        let (_, st) = http(req, wait: 15)
+        if st == -1 { return "上传超时" }
         return (200..<300).contains(st) ? nil : "上传失败 HTTP \(st)"
     }
 
@@ -119,12 +127,14 @@ enum CloudSync {
     }
 
     /// 小组件下载并导入本地。返回 nil = 成功，否则错误信息。
+    /// wait 由调用方决定：小组件路径必须很小（默认 5 秒），避免超出扩展时间预算。
     @discardableResult
-    static func download(code: String) -> String? {
+    static func download(code: String, wait: TimeInterval = 5) -> String? {
         guard !code.isEmpty else { return "未配置同步码" }
         var req = URLRequest(url: URL(string: "\(base)/\(code)/json?poll=1&since=all")!)
-        req.timeoutInterval = 30
-        let (data, st) = http(req)
+        req.timeoutInterval = wait
+        let (data, st) = http(req, wait: wait)
+        if st == -1 { return "网络超时" }
         guard (200..<300).contains(st), let data = data else { return "下载失败 HTTP \(st)" }
         // ntfy json 流：一行一个 JSON，取最后一条消息
         var last: String?
@@ -141,13 +151,14 @@ enum CloudSync {
 
     /// 小组件侧：依次尝试「配置里的同步码 → 本地记住的通道 → 设备自动通道」，
     /// 命中任一即导入成功。返回 nil = 成功，否则最后一次错误信息。
+    /// wait 是**每个候选**的超时；三个候选最多 3×wait 秒，必须留在扩展预算内。
     @discardableResult
-    static func downloadBest(preferred: String = "") -> String? {
+    static func downloadBest(preferred: String = "", wait: TimeInterval = 5) -> String? {
         var seen = [String]()
         var lastErr = "未配置同步通道"
         for c in [preferred, topic, autoCode] where !c.isEmpty && !seen.contains(c) {
             seen.append(c)
-            if let e = download(code: c) { lastErr = e } else { return nil }
+            if let e = download(code: c, wait: wait) { lastErr = e } else { return nil }
         }
         return lastErr
     }
