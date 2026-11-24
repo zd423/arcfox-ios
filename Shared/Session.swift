@@ -62,8 +62,11 @@ enum Store {
             attributes: [FileAttributeKey.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
     }
 
+    /// 兜底读：`UserDefaults(suiteName:)` 对未授权的 App Group 会返回一个"空壳"对象，
+    /// 写入静默失败、读出为空，所以这里必须同时合并 standard（沙盒内一定可写）。
     private static func seedFromSuite() -> [String: Any] {
         var seed: [String: Any] = [:]
+        for (k, v) in UserDefaults.standard.dictionaryRepresentation() where ours(k) { seed[k] = v }
         for (k, v) in d.dictionaryRepresentation() where ours(k) { seed[k] = v }
         return seed
     }
@@ -90,10 +93,17 @@ enum Store {
         if let v = v { dict[k] = v } else { dict.removeValue(forKey: k) }
         if writeDictRaw(dict) { return }
         fileUsable = false
-        // 回退写 suite
-        if let s = v as? String { d.set(s, forKey: k) }
-        else if let i = v as? Int { d.set(i, forKey: k) }
-        else { d.removeObject(forKey: k) }
+        // 回退写 suite + standard：未授权 App Group 的 suite 是空壳，只有 standard 一定落盘
+        if let s = v as? String {
+            d.set(s, forKey: k)
+            UserDefaults.standard.set(s, forKey: k)
+        } else if let i = v as? Int {
+            d.set(i, forKey: k)
+            UserDefaults.standard.set(i, forKey: k)
+        } else {
+            d.removeObject(forKey: k)
+            UserDefaults.standard.removeObject(forKey: k)
+        }
     }
 
     static func get(_ k: String, _ def: String = "") -> String {
@@ -125,11 +135,15 @@ enum Store {
         return out
     }
 
-    /// 云端字典导入本地 suite（小组件进程用；不碰共享文件通道）。
+    /// 云端字典导入本地。小组件进程里 App Group 通常是空壳，
+    /// 所以同时写 suite 与 standard，并强制落盘，保证紧随其后的 readCache() 一定能读到。
     static func importDict(_ dict: [String: Any]) {
         for (k, v) in dict where ours(k) {
             d.set(v, forKey: k)
+            UserDefaults.standard.set(v, forKey: k)
         }
+        d.synchronize()
+        UserDefaults.standard.synchronize()
     }
 
     /// 诊断：跨进程共享是否真实可用——共享文件通道，或证书授权的 App Group 容器。

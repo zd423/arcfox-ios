@@ -60,7 +60,8 @@ struct CarProvider: AppIntentTimelineProvider {
                 if manual.isEmpty {
                     fetchError = "长按卡片→编辑小组件→填同步码"
                 } else if let e = derr {
-                    fetchError = "云同步：" + e
+                    // 带上实际使用的通道前缀，用户截图即可判断走的是手填码还是自动通道
+                    fetchError = "云同步(" + String(code.prefix(6)) + ")：" + e
                 } else {
                     fetchError = "请打开 App 刷新一次"
                 }
