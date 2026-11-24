@@ -1,0 +1,8 @@
+name: selftest-macos
+on:
+  workflow_dispatch:
+jobs:
+  t:
+    runs-on: macos-14
+    steps:
+      - run: echo hello-macos; sw_vers; xcodebuild -version
