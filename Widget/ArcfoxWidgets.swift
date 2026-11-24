@@ -52,7 +52,7 @@ struct CarProvider: AppIntentTimelineProvider {
         if cache == nil || stale {
             // 只做一次单请求的云同步：扩展的 timeline 预算很紧，任何多请求链路都会让它超时被杀，
             // 取车况、刷 token 这类重活一律留给主 App（App 每次刷新后都会上传快照）。
-            let derr = CloudSync.downloadBest(preferred: code, wait: 5)
+            let derr = CloudSync.download(code: code, wait: 3)
             cache = TspControl.readCache()
             ts = Store.getLong(Store.kCacheTs, 0)
             stale = ts == 0 || Date().timeIntervalSince1970 * 1000 - Double(ts) > Double(autoMin) * 60_000

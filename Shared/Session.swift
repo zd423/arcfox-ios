@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import Security
 
 /// App Group 共享存储：主 App 与小组件扩展共用一份键值存储（对应 Android 的 SharedPreferences）。
 /// 共享存储：优先用固定路径共享文件（TrollStore + no-sandbox 私有权能下 App 与
@@ -33,7 +34,7 @@ enum Store {
     /// （例如 group.ea9095b9ab7b2c01.*），此时包内既没有 embedded.mobileprovision，
     /// 写死的组名也不再被授权；只有从 Security.framework 读自身 entitlements
     /// 才能拿到真正可用的组名，主 App 与小组件扩展因此重新共享同一份数据。
-    private static func runtimeEntitlementGroups() -> [String] {
+    private static func runtimeEntitlement(_ name: String) -> [String] {
         typealias CreateFn = @convention(c) (UnsafeRawPointer?) -> UnsafeMutableRawPointer?
         typealias CopyFn = @convention(c) (UnsafeMutableRawPointer?, UnsafeRawPointer?, UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer?
         guard let h = dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_NOW),
@@ -42,11 +43,81 @@ enum Store {
         let create = unsafeBitCast(sCreate, to: CreateFn.self)
         let copy = unsafeBitCast(sCopy, to: CopyFn.self)
         guard let task = create(nil) else { return [] }
-        let key = "com.apple.security.application-groups" as CFString
+        let key = name as CFString
         guard let raw = copy(task, Unmanaged.passUnretained(key).toOpaque(), nil) else { return [] }
         let value = Unmanaged<AnyObject>.fromOpaque(raw).takeRetainedValue()
         return (value as? [String]) ?? []
     }
+
+    private static func runtimeEntitlementGroups() -> [String] {
+        runtimeEntitlement("com.apple.security.application-groups")
+    }
+
+    // MARK: - Keychain 通道（重签环境下的确定性方案）
+    // 企业证书重签后，App Group 容器可能根本不存在，但
+    // keychain-access-groups 通常是 TEAM.* 通配符，App 与 appex 共用同一个 access group，
+    // 因此 Keychain 是不依赖容器也能确实共享的通道。
+    private static let kcService = "arcfoxplus.widget.bridge"
+    private static let kcAccount = "shared"
+
+    /// 从运行时 entitlements 推导本进程可用的 keychain access group。
+    private static func keychainGroup() -> String? {
+        let groups = runtimeEntitlement("keychain-access-groups")
+        for g in groups where g.hasSuffix(".*") {
+            return String(g.dropLast(2)) + ".com.arcfoxplus.widget"
+        }
+        for g in groups where !g.isEmpty && g != "com.apple.token" { return g }
+        return nil
+    }
+
+    private static func kcBaseQuery() -> [String: Any] {
+        var q: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: kcService,
+            kSecAttrAccount as String: kcAccount,
+        ]
+        if let g = keychainGroup() { q[kSecAttrAccessGroup as String] = g }
+        return q
+    }
+
+    @discardableResult
+    private static func kcWrite(_ text: String) -> Bool {
+        let base = kcBaseQuery()
+        SecItemDelete(base as CFDictionary)
+        var q = base
+        q[kSecValueData as String] = Data(text.utf8)
+        q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        return SecItemAdd(q as CFDictionary, nil) == errSecSuccess
+    }
+
+    private static func kcRead() -> String? {
+        var q = kcBaseQuery()
+        q[kSecReturnData as String] = true
+        q[kSecMatchLimit as String] = kSecMatchLimitOne
+        var out: CFTypeRef?
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess,
+              let data = out as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// 把当前全量（已排除大体积键）写入 Keychain，供另一进程读取。
+    /// 注意：调用方已持 ioLock，所以这里不能再调 loadAll()，必须接收已构造好的 dict。
+    private static func publishKeychain(_ dict: [String: Any]) {
+        var out: [String: Any] = [:]
+        for (k, v) in dict where ours(k) && !uploadSkip.contains(k) { out[k] = v }
+        guard !out.isEmpty,
+              let data = try? JSONSerialization.data(withJSONObject: out, options: []),
+              let text = String(data: data, encoding: .utf8) else { return }
+        _ = kcWrite(text)
+    }
+
+    /// 诊断：Keychain 通道状态。
+    static var keychainText: String {
+        guard let g = keychainGroup() else { return "不可用(无 keychain 权限)" }
+        if kcRead() != nil { return "可用(" + g + ")" }
+        return "未写入(" + g + ")"
+    }
+
 
     /// 诊断：运行时实际被授权的组列（重签环境里这是唯一可信来源）。
     static var runtimeGroupsText: String {
@@ -117,7 +188,13 @@ enum Store {
             fileUsable = true
             return dict
         }
-        let seed = seedFromSuite()
+        var seed = seedFromSuite()
+        // 重签环境：App Group 容器不存在时，主 App 写入 Keychain 的快照是唯一可见的共享数据
+        if seed["cache"] == nil, let text = kcRead(),
+           let data = text.data(using: .utf8),
+           let kc = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+            for (k, v) in kc where ours(k) { seed[k] = v }
+        }
         if writeDictRaw(seed), FileManager.default.fileExists(atPath: sharedPath) {
             fileUsable = true
             return seed
@@ -130,7 +207,7 @@ enum Store {
         ioLock.lock(); defer { ioLock.unlock() }
         var dict = (NSDictionary(contentsOfFile: sharedPath) as? [String: Any]) ?? seedFromSuite()
         if let v = v { dict[k] = v } else { dict.removeValue(forKey: k) }
-        if writeDictRaw(dict) { return }
+        if writeDictRaw(dict) { publishKeychain(dict); return }
         fileUsable = false
         // 回退写 suite + standard：未授权 App Group 的 suite 是空壳，只有 standard 一定落盘
         if let s = v as? String {
@@ -143,6 +220,7 @@ enum Store {
             d.removeObject(forKey: k)
             UserDefaults.standard.removeObject(forKey: k)
         }
+        publishKeychain(dict)
     }
 
     static func get(_ k: String, _ def: String = "") -> String {
@@ -183,6 +261,7 @@ enum Store {
         }
         d.synchronize()
         UserDefaults.standard.synchronize()
+        publishKeychain(dict)
     }
 
     /// 诊断：跨进程共享是否真实可用——共享文件通道，或证书授权的 App Group 容器。
@@ -192,7 +271,8 @@ enum Store {
         set("__probe", t)
         _ = loadAll()
         if fileUsable == true && get("__probe") == t { return true }
-        return FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupId) != nil
+        if FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupId) != nil { return true }
+        return kcRead() != nil
     }
 
     /// 诊断用：当前走的是哪条通道。

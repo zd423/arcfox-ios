@@ -30,6 +30,8 @@ struct AdvancedSettingsView: View {
             .font(.callout)
             Text("证书组权限：\(Store.certGroupsText)｜实际用的组：\(Store.appGroupId)｜通道：\(Store.channelName)")
                 .font(.caption2).foregroundColor(.secondary)
+            Text("Keychain 通道：\(Store.keychainText)")
+                .font(.caption2).foregroundColor(.secondary)
 
             // 云同步：无 App Group 权限时小组件走云端拉数据（设备自动通道免手填，同步码为备选）
             sub("小组件云同步（无共享权限时的通道）")
