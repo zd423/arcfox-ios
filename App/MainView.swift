@@ -43,7 +43,7 @@ struct MainView: View {
             .background(Color(.systemGroupedBackground))
             .navigationTitle("极狐车况")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
                         st.refresh()
                     } label: {

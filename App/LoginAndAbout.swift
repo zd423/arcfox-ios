@@ -83,7 +83,7 @@ struct LoginView: View {
             }
             .navigationTitle(stage == 0 ? "登录" : "车况授权")
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .navigationBarLeading) {
                     Button("关闭") { dismiss() }
                 }
             }
@@ -144,7 +144,7 @@ struct AboutView: View {
             }
             .navigationTitle("关于")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } }
+                ToolbarItem(placement: .navigationBarTrailing) { Button("完成") { dismiss() } }
             }
         }
     }
@@ -167,8 +167,8 @@ struct RawStateView: View {
             }
             .navigationTitle("原始车况数据")
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("关闭") { dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarLeading) { Button("关闭") { dismiss() } }
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button(busy ? "探测中…" : "探测") { probe() }
                         .disabled(busy)
                 }
